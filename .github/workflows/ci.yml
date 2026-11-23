@@ -387,6 +387,76 @@ jobs:
       - name: Install and remove each package with install.sh
         run: desktop/packaging/linux/test-install.sh
 
+  # Native ARM64 package smoke checks. Release publishing and install.sh's
+  # architecture allowlist are added separately after the package formats work.
+  linux-arm64-packages:
+    name: Linux packages (ARM64 smoke)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libgl1-mesa-dev libx11-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libfontconfig1-dev \
+            libfreetype-dev libdbus-1-dev libxtst-dev libavcodec-dev libavutil-dev \
+            qt6-l10n-tools file desktop-file-utils appstream rpm shellcheck
+          pkg-config --exists libavcodec libavutil
+      - name: Install Qt for native ARM64
+        uses: jurplel/install-qt-action@b344308e4483fc892e0d27b3cd1b173ebdd95f06 # v4.5.0
+        with:
+          version: ${{ env.QT_VERSION }}
+          host: linux_arm64
+          target: desktop
+          arch: linux_gcc_arm64
+          modules: qtshadertools qtwaylandcompositor
+          cache: true
+          aqtsource: git+https://github.com/miurahr/aqtinstall.git@5a49f2b391ae8ee1d3c0dd87f8b33c1d49a4deb7
+      - name: Install pinned ARM64 AppImage tooling
+        run: |
+          curl -fsSL -o /tmp/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-aarch64.AppImage
+          curl -fsSL -o /tmp/runtime-aarch64 \
+            https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-aarch64
+          sha256sum -c - <<'SUMS'
+          f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158  /tmp/appimagetool
+          00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444  /tmp/runtime-aarch64
+          SUMS
+          chmod +x /tmp/appimagetool
+          sudo mv /tmp/appimagetool /usr/local/bin/appimagetool
+          echo "APPIMAGE_RUNTIME=/tmp/runtime-aarch64" >> "$GITHUB_ENV"
+      - name: Build ARM64 desktop and packages
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          test "$(uname -m)" = aarch64
+          cargo build --release --locked -p nectarlink-desktop -p nectarlink-mcp
+          ./desktop/packaging/linux/build-deb.sh
+          ./desktop/packaging/linux/build-rpm.sh
+          ./desktop/packaging/linux/build-appimage.sh
+          ./desktop/packaging/linux/build-tarball.sh
+      - name: Check ARM64 package metadata, install and uninstall
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: bash desktop/packaging/linux/test-arm64-packages.sh
+      - name: Check the ARM64 package test script
+        run: shellcheck desktop/packaging/linux/test-arm64-packages.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nectarlink-linux-arm64-ci
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+            dist/*.tar.gz
+          retention-days: 7
+
   android:
     name: Android app
     needs: changes
